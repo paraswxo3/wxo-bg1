@@ -1,0 +1,20 @@
+Indices
+
+
+1. bank_guarantee_clauses_train : For storing onerous clauses and their explanation for training
+    classification (Onerous or Neutral)
+    embedding
+    clause  ( the clause text)
+    clause_category ( e.g. Duration, Expiry, Governing etc.)
+    feedback
+    status
+For training purposes, after review and approval goes to the live index.
+pipeline = elser_ingest_bg_clauses_train
+
+2. bank_guarantee_clauses_live : For storing the standard clause template and their classification based on the clause type
+    classification (Onerous or Neutral)
+    embedding
+    clause  ( the clause text)
+    clause_category ( e.g. Duration, Expiry, Governing etc.)
+Live index, used for processing new documents. 
+pipeline = elser_ingest_bg_clauses_live

@@ -1,58 +1,22 @@
-from fastapi import FastAPI, File, Header, Depends, Security, HTTPException, Body, UploadFile
+import base64
+from fastapi import Body, Depends, FastAPI, HTTPException, Security
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
-from pdf_to_html import extract_paragraphs_from_base64,check_bg_amount_in_es
-from typing import List
-from bg_elser_query import searchBG_elser
-from bg_docs_actions import bg_query,upload_bg_doc_es
-from bg_query_doc import query_doc,search_and_query_doc
-import json
+import pandas as pd
+from io import StringIO
+from elser import upload_bg_clauses_train
+from elser import upload_bg_clauses_live
 
 app = FastAPI()
 
-class BGSection(BaseModel):
-    pageNumber: int
-    section: str
-    section_preview: str
-    sectionNumber: int
-    score: float
-    clause_type: str
-    content: str
-    explanation: str
-    classification: str
+# Define the expected columns
+EXPECTED_COLUMNS = {"Paragraph", "Clause Classification", "Explanation","Clause Type","Clause Meaning","Clause Example"}
 
-class HTMLContent(BaseModel):
-    html_content: str
-
-class BGSections(BaseModel):
-    matching_sections: List[BGSection]
-    not_matching_sections: List[BGSection]
-    html_contents: List[HTMLContent]
-
-class BGAmount(BaseModel):
-    bg_amount: float
-
-class FindInBGDocsInput(BaseModel):
-    content: str
-    file_name: str
-
-class FindInBGDocsOutput(BaseModel):
-    content: str
-    score: float
-
-class FindInBGDocsOutputList(BaseModel):
-    output: List[FindInBGDocsOutput]
-
-class QueryBGDocInput(BaseModel):
-    paragraphs :List[str]
-    user_query: str
-
-class QueryBGDocOutput(BaseModel):
+# Define the request model
+class CSVInput(BaseModel):
+    file_content: str  # Expecting the CSV file content as plain text
+class ResponseModel(BaseModel):
     response: str
-
-class QueryBGDocOutputWrapper(BaseModel):
-    sections: List[FindInBGDocsOutput]
-    answer: str
 
 api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=True)
 
@@ -64,42 +28,42 @@ def verify_api_key(api_key: str = Security(api_key_header)):
         )
     return api_key
 
+@app.post("/upload-csv-train/", response_model=ResponseModel, dependencies=[Depends(verify_api_key)])
+def upload_csv_train(csv_input: CSVInput = Body(..., embed=True)):
+    try:
+        # Read the CSV content from the text input
+        csv_data = pd.read_csv(StringIO(csv_input.file_content))
 
-@app.post("/find_sections", response_model=BGSections, dependencies=[Depends(verify_api_key)])
-def find_sections(input_doc: str = Body(..., embed=True)):
-    response = extract_paragraphs_from_base64(pdf_base64=input_doc)
-    # print(json.dumps(response))
-    return response
+        # Validate columns
+        uploaded_columns = set(csv_data.columns)
+        if not EXPECTED_COLUMNS.issubset(uploaded_columns):
+            missing_columns = EXPECTED_COLUMNS - uploaded_columns
+            raise HTTPException(
+                status_code=400,
+                detail=f"Missing required columns: {', '.join(missing_columns)}"
+            )
 
-@app.post("/find_bg_amount", response_model=BGAmount, dependencies=[Depends(verify_api_key)])
-def find_bg_amount(input_doc: str = Body(..., embed=True)):
-    response = check_bg_amount_in_es(pdf_base64=input_doc)
-    print("bg amount",response)
-    return {"bg_amount":response}
+        # Process the CSV data (Loop through the records)
+        processed_data = []
+        for index, row in csv_data.iterrows():
+            # Extract relevant data
+            record = {
+                "clause": row["Paragraph"],
+                "classification": row["Clause Classification"],
+                "explanation": row["Explanation"],
+                "clause_category": row["Clause Type"],
+                "category_meaning": row["Clause Meaning"],
+                "category_example": row["Clause Example"]
+            }
+            processed_data.append(record)
+        print(len(processed_data))
+        upload_bg_clauses_train(processed_data)
+        upload_bg_clauses_live(processed_data)
 
-@app.post("/find_in_bg_doc", response_model=FindInBGDocsOutputList, dependencies=[Depends(verify_api_key)])
-def find_in_bg_doc(query_input: FindInBGDocsInput = Body(..., embed=True)):
-    response = bg_query(filename=query_input.file_name,input_query=query_input.content)
-    # print("response",json.dumps(response))
-    return {"output":response}
-
-@app.post("/bg_query_doc", response_model=QueryBGDocOutput, dependencies=[Depends(verify_api_key)])
-def bg_query_doc(query_input: QueryBGDocInput = Body(..., embed=True)):
-    response = query_doc(paragraphs=query_input.paragraphs,search_query=query_input.user_query)
-    # print("response",json.dumps(response))
-    return {"response":response}
-
-@app.post("/bg_search_doc_and_query", response_model=QueryBGDocOutputWrapper, dependencies=[Depends(verify_api_key)])
-def bg_search_doc_and_query(query_input: FindInBGDocsInput = Body(..., embed=True)):
-    response = search_and_query_doc(filename=query_input.file_name,input_query=query_input.content)
-    # print("response",json.dumps(response))
-    return {"sections":response["sections"],"answer":response["answer"]}
-
-@app.post("/upload_doc_to_es", response_model=QueryBGDocOutput, dependencies=[Depends(verify_api_key)])
-def upload_doc_to_es(doc_input: FindInBGDocsInput = Body(..., embed=True)):
-    response = upload_bg_doc_es(filename=doc_input.file_name,pdf_base64=doc_input.content)
-    print("response",response)
-    return {"response":"uploaded"}
+        return {"response": "File processed successfully"}
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
 if __name__ == '__main__':
     import uvicorn
